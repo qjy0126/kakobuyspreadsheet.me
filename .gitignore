@@ -1,0 +1,6 @@
+.DS_Store
+item/
+img/products/
+js/products.js
+scripts/__pycache__/
+*.pyc
