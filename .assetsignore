@@ -1,0 +1,7 @@
+.git
+.git/**
+**/.DS_Store
+item/
+img/products/
+js/products.js
+scripts/
