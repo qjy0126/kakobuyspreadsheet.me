@@ -7,6 +7,280 @@ SK.root = (() => {
   return src.replace(/js\/site\.js(\?.*)?$/, "");
 })();
 SK.asset = (path) => SK.root + String(path || "").replace(/^\//, "");
+if (!document.querySelector('script[src*="js/analytics.js"]')) {
+  const analytics = document.createElement("script");
+  analytics.src = SK.asset("js/analytics.js");
+  document.head.appendChild(analytics);
+}
+
+SK.pwa = SK.pwa || { deferred: null };
+if (typeof SK.pwa.deferred === "undefined") SK.pwa.deferred = null;
+SK.pwaStandalone = () =>
+  window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+SK.injectPwaHead = () => {
+  if (document.querySelector('link[rel="manifest"]')) return;
+  const tags = [
+    ["link", { rel: "manifest", href: "/manifest.json?v=pwa12" }],
+    ["meta", { name: "theme-color", content: "#FB2840" }],
+    ["meta", { name: "mobile-web-app-capable", content: "yes" }],
+    ["meta", { name: "apple-mobile-web-app-capable", content: "yes" }],
+    ["meta", { name: "apple-mobile-web-app-status-bar-style", content: "default" }],
+    ["meta", { name: "apple-mobile-web-app-title", content: "KakoBuy Spreadsheet" }],
+    ["meta", { name: "application-name", content: "KakoBuy Spreadsheet" }],
+    ["link", { rel: "apple-touch-icon", href: "/img/apple-touch-icon.png", sizes: "180x180" }],
+  ];
+  tags.forEach(([tag, attrs]) => {
+    const el = document.createElement(tag);
+    Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
+    document.head.appendChild(el);
+  });
+};
+SK.injectPwaHead();
+SK.injectTrustHead = () => {
+  [
+    ["privacy-policy", "/privacy.html"],
+    ["terms-of-service", "/terms.html"],
+    ["author", "/about.html"],
+  ].forEach(([rel, href]) => {
+    if (document.querySelector(`link[rel="${rel}"]`)) return;
+    const el = document.createElement("link");
+    el.setAttribute("rel", rel);
+    el.setAttribute("href", href);
+    document.head.appendChild(el);
+  });
+};
+SK.injectTrustHead();
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {});
+}
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  SK.pwa.deferred = e;
+  SK.refreshPwaUi();
+});
+window.addEventListener("appinstalled", () => {
+  SK.pwa.deferred = null;
+  try { localStorage.setItem("sk-pwa-installed", "1"); } catch (_) {}
+  SK.track("pwa_installed");
+  SK.refreshPwaUi();
+});
+SK.pwaDismissed = () => {
+  try {
+    const t = Number(localStorage.getItem("sk-pwa-dismiss-v2") || 0);
+    return t && Date.now() - t < 30 * 24 * 60 * 60 * 1000;
+  } catch (_) { return false; }
+};
+SK.pwaInstalledFlag = () => {
+  try { return localStorage.getItem("sk-pwa-installed") === "1"; } catch (_) { return false; }
+};
+SK.pwaIos = () =>
+  (/iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+SK.pwaAndroid = () => /android/i.test(navigator.userAgent);
+SK.showInstallGuide = () => {
+  const guide = document.getElementById("ios-guide");
+  const title = document.getElementById("pwa-guide-title");
+  const gif = document.getElementById("pwa-guide-gif");
+  const steps = document.getElementById("pwa-guide-steps");
+  if (!guide || !gif || !steps) return;
+  let data;
+  if (SK.pwaIos()) {
+    data = {
+      title: "Add to Home Screen",
+      src: "/img/ios-a2hs.gif",
+      alt: "Safari: tap Share, then Add to Home Screen",
+      steps: [
+        "Tap <b>Share</b> or the <b>•••</b> button",
+        "Tap <b>Add to Home Screen</b>",
+        "Tap <b>Add</b>",
+      ],
+    };
+  } else if (SK.pwaAndroid()) {
+    data = {
+      title: "Install app",
+      src: "/img/android-a2hs.gif",
+      alt: "Chrome: tap menu, then Install app",
+      steps: [
+        "Tap the <b>⋮</b> menu at the top right",
+        "Tap <b>Install app</b> or <b>Add to Home screen</b>",
+        "Tap <b>Install</b>",
+      ],
+    };
+  } else {
+    data = {
+      title: "Install on this computer",
+      src: "/img/icon-512.png",
+      alt: "KakoBuy icon",
+      steps: [
+        "In <b>Chrome</b> or <b>Edge</b>, click the install icon in the address bar",
+        "Or click <b>Add</b> when the system prompt appears",
+        "Safari: <b>File → Add to Dock</b>",
+      ],
+    };
+  }
+  if (title) title.textContent = data.title;
+  gif.src = data.src;
+  gif.alt = data.alt;
+  steps.innerHTML = data.steps.map((s) => `<li>${s}</li>`).join("");
+  guide.classList.add("is-on");
+};
+SK.pwaChromium = () =>
+  /Chrome|Edg|Chromium/i.test(navigator.userAgent) && !/iPhone|iPad|CriOS|EdgiOS/i.test(navigator.userAgent);
+SK.waitForInstallPrompt = async (ms) => {
+  const start = Date.now();
+  while (!SK.pwa.deferred && Date.now() - start < ms) {
+    await new Promise((r) => setTimeout(r, 120));
+  }
+  return SK.pwa.deferred;
+};
+SK.installPwa = async () => {
+  SK.track("pwa_install_click");
+  const addBtn = document.getElementById("pwa-add");
+  const headerBtn = document.getElementById("pwa-header-install");
+  const prev = addBtn ? addBtn.textContent : "";
+  const prevH = headerBtn ? headerBtn.textContent : "";
+  if (addBtn) addBtn.textContent = "…";
+  if (headerBtn) headerBtn.textContent = "…";
+  const dp = await SK.waitForInstallPrompt(SK.pwaChromium() ? 2800 : 400);
+  if (addBtn) addBtn.textContent = prev || "Add";
+  if (headerBtn) headerBtn.textContent = prevH || SK.t("addDesktop");
+  if (dp && typeof dp.prompt === "function") {
+    try {
+      dp.prompt();
+      const choice = await dp.userChoice.catch(() => ({ outcome: "dismissed" }));
+      SK.pwa.deferred = null;
+      if (choice && choice.outcome === "accepted") {
+        try { localStorage.setItem("sk-pwa-installed", "1"); } catch (_) {}
+        const guide = document.getElementById("ios-guide");
+        if (guide) guide.classList.remove("is-on");
+        const banner = document.getElementById("pwa-banner");
+        if (banner) banner.classList.add("is-off");
+        const headerBtn = document.getElementById("pwa-header-install");
+        if (headerBtn) headerBtn.classList.add("is-off");
+      }
+      SK.refreshPwaUi();
+      return;
+    } catch (_) {
+      SK.pwa.deferred = null;
+    }
+  }
+  SK.showInstallGuide();
+};
+SK.refreshPwaUi = () => {
+  const banner = document.getElementById("pwa-banner");
+  const headerBtn = document.getElementById("pwa-header-install");
+  const hide = SK.pwaStandalone();
+  if (headerBtn) headerBtn.classList.toggle("is-off", hide);
+  if (banner) banner.classList.toggle("is-off", hide);
+};
+SK.mountPwa = () => {
+  let banner = document.getElementById("pwa-banner");
+  let guide = document.getElementById("ios-guide");
+  if (!banner) {
+    banner = document.createElement("div");
+    banner.id = "pwa-banner";
+    banner.className = "pwa-banner";
+    banner.innerHTML = `
+      <img src="/img/icon-192.png" alt="" width="44" height="44" />
+      <p>Add to home screen<span>Tap Add to install</span></p>
+      <button type="button" class="btn btn-solid" id="pwa-add">Add</button>
+      <button type="button" class="pwa-dismiss" id="pwa-dismiss" aria-label="Not now">×</button>
+    `;
+    document.body.appendChild(banner);
+  }
+  if (!guide) {
+    guide = document.createElement("aside");
+    guide.id = "ios-guide";
+    guide.className = "ios-guide";
+    guide.innerHTML = `
+      <div class="ios-guide-top">
+        <p id="pwa-guide-title">Add to Home Screen</p>
+        <button type="button" class="pwa-dismiss" id="ios-guide-dismiss" aria-label="Close">×</button>
+      </div>
+      <img id="pwa-guide-gif" src="/img/ios-a2hs.gif" alt="Add to Home Screen" width="420" height="280" />
+      <ol id="pwa-guide-steps"></ol>
+    `;
+    document.body.appendChild(guide);
+  }
+  const addBtn = document.getElementById("pwa-add");
+  if (addBtn && !addBtn.dataset.bound) {
+    addBtn.dataset.bound = "1";
+    addBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      SK.installPwa();
+    });
+  }
+  const dismissBtn = document.getElementById("pwa-dismiss");
+  if (dismissBtn && !dismissBtn.dataset.bound) {
+    dismissBtn.dataset.bound = "1";
+    dismissBtn.addEventListener("click", () => {
+      banner.classList.add("is-off");
+      const headerBtn = document.getElementById("pwa-header-install");
+      if (headerBtn) headerBtn.classList.add("is-off");
+      SK.track("pwa_dismiss");
+    });
+  }
+  const closeGuide = document.getElementById("ios-guide-dismiss");
+  if (closeGuide && !closeGuide.dataset.bound) {
+    closeGuide.dataset.bound = "1";
+    closeGuide.addEventListener("click", () => {
+      guide.classList.remove("is-on");
+      SK.track("pwa_guide_dismiss");
+    });
+  }
+  SK.refreshPwaUi();
+};
+SK.track = (name, params) => {
+  try {
+    if (typeof gtag !== "function") return;
+    gtag("event", name, Object.assign({ transport_type: "beacon" }, params || {}));
+  } catch (_) {}
+};
+document.addEventListener("click", (e) => {
+  const a = e.target.closest("a[href*='kakobuy.com']");
+  if (!a) return;
+  const href = a.href || "";
+  if (/\/register/i.test(href)) {
+    SK.track("signup_kakobuy", { link_url: href, page_path: location.pathname });
+    return;
+  }
+  const id = document.body.getAttribute("data-item-id") || a.getAttribute("data-buy") || "";
+  const item = id && Array.isArray(SK.products)
+    ? SK.products.find((p) => String(p.id) === String(id))
+    : null;
+  if (item) {
+    SK.track("buy_kakobuy", {
+      agent: "kakobuy",
+      item_id: String(item.id),
+      item_name: item.title || "",
+      currency: "USD",
+      value: Number(item.price) || 0,
+      items: [{
+        item_id: String(item.id),
+        item_name: item.title || "",
+        item_category: item.category || "",
+        price: Number(item.price) || 0,
+        quantity: 1,
+      }],
+      link_url: href,
+      page_path: location.pathname,
+    });
+  } else {
+    const titleEl = document.querySelector("#item-root h1, .buy-box h1");
+    const priceEl = document.querySelector("#item-root .price, .buy-box .price");
+    const title = titleEl ? titleEl.textContent.trim() : "";
+    const price = priceEl ? parseFloat(String(priceEl.textContent).replace(/[^0-9.]/g, "")) : 0;
+    SK.track("buy_kakobuy", {
+      agent: "kakobuy",
+      item_id: id || "",
+      item_name: title,
+      currency: "USD",
+      value: price || 0,
+      link_url: href,
+      page_path: location.pathname,
+    });
+  }
+});
 SK.signup = "https://www.kakobuy.com/register?affcode=9v88f";
 SK.discord = "https://discord.gg/7DRMaMAADv";
 SK.aff = "9v88f";
@@ -25,6 +299,86 @@ SK.pages = [
   { href: "faq.html", label: "FAQ", id: "faq" },
   { href: "qc.html", label: "QC Images", id: "qc" },
 ];
+SK.langs = [
+  { code: "en", label: "EN" },
+  { code: "pl", label: "PL" },
+  { code: "de", label: "DE" },
+];
+SK.catSlugs = ["shoes","t-shirts","accessories","hoodies","pants","jackets","jersey","watches","headwear","glasses","sets","bricks","perfume","underwear","other"];
+SK.I18N = {
+  en: {
+    nav_home: "Home", nav_spreadsheet: "KakoBuy Spreadsheet", nav_articles: "Articles",
+    nav_coupons: "Coupons", nav_faq: "FAQ", nav_qc: "QC Images",
+    popular: "Popular", showing: "Showing {n} finds", addDesktop: "Add to desktop",
+    search: "Search", signup: "Sign up for KakoBuy", items: "items",
+    cat_shoes: "Designer Shoes", cat_tshirts: "Tees & Jerseys", cat_accessories: "Premium Accessories",
+    cat_hoodies: "Verified Hoodies", cat_pants: "Pants", cat_jackets: "Jackets & Outerwear",
+    cat_jersey: "Jerseys", cat_watches: "Watches & Jewelry", cat_headwear: "Hats & Caps",
+    cat_glasses: "Sunglasses", cat_sets: "Sets", cat_bricks: "Bricks & Toys",
+    cat_perfume: "Perfume", cat_underwear: "Underwear", cat_other: "Other finds",
+  },
+  pl: {
+    nav_home: "Strona główna", nav_spreadsheet: "KakoBuy Spreadsheet", nav_articles: "Artykuły",
+    nav_coupons: "Kupony", nav_faq: "FAQ", nav_qc: "Zdjęcia QC",
+    popular: "Popularne", showing: "Wyświetlono {n} pozycji", addDesktop: "Dodaj na pulpit",
+    search: "Szukaj", signup: "Załóż konto KakoBuy", items: "pozycji",
+    cat_shoes: "Buty designerskie", cat_tshirts: "Koszulki i jersey", cat_accessories: "Akcesoria",
+    cat_hoodies: "Bluzy", cat_pants: "Spodnie", cat_jackets: "Kurtki",
+    cat_jersey: "Jersey", cat_watches: "Zegarki i biżuteria", cat_headwear: "Czapki",
+    cat_glasses: "Okulary", cat_sets: "Komplety", cat_bricks: "Klocki i zabawki",
+    cat_perfume: "Perfumy", cat_underwear: "Bielizna", cat_other: "Inne znaleziska",
+  },
+  de: {
+    nav_home: "Start", nav_spreadsheet: "KakoBuy Spreadsheet", nav_articles: "Artikel",
+    nav_coupons: "Gutscheine", nav_faq: "FAQ", nav_qc: "QC-Fotos",
+    popular: "Beliebt", showing: "{n} Funde angezeigt", addDesktop: "Zum Desktop hinzufügen",
+    search: "Suche", signup: "KakoBuy-Konto eröffnen", items: "Funde",
+    cat_shoes: "Designer-Schuhe", cat_tshirts: "Shirts & Jerseys", cat_accessories: "Accessoires",
+    cat_hoodies: "Hoodies", cat_pants: "Hosen", cat_jackets: "Jacken",
+    cat_jersey: "Trikots", cat_watches: "Uhren & Schmuck", cat_headwear: "Mützen & Caps",
+    cat_glasses: "Sonnenbrillen", cat_sets: "Sets", cat_bricks: "Steine & Spielzeug",
+    cat_perfume: "Parfum", cat_underwear: "Unterwäsche", cat_other: "Weitere Funde",
+  },
+};
+SK.currentLang = () => {
+  const path = location.pathname || "";
+  if (path === "/pl.html" || path === "/pl" || path.startsWith("/pl/")) return "pl";
+  if (path === "/de.html" || path === "/de" || path.startsWith("/de/")) return "de";
+  const body = document.body && document.body.getAttribute("data-lang");
+  if (body === "pl" || body === "de") return body;
+  const htmlLang = (document.documentElement.getAttribute("lang") || "").slice(0, 2).toLowerCase();
+  if (htmlLang === "pl" || htmlLang === "de") return htmlLang;
+  return "en";
+};
+SK.t = (key, vars) => {
+  const pack = SK.I18N[SK.currentLang()] || SK.I18N.en;
+  let s = pack[key] || SK.I18N.en[key] || key;
+  if (vars) Object.keys(vars).forEach((k) => { s = s.replace("{" + k + "}", vars[k]); });
+  return s;
+};
+SK.homeHref = () => (SK.currentLang() === "en" ? "/" : "/" + SK.currentLang() + ".html");
+SK.langHref = (code) => {
+  let path = location.pathname || "/";
+  if (path === "/pl.html" || path === "/de.html" || path === "/" || path === "/index.html" || path === "/pl" || path === "/de") {
+    if (code === "en") return "/";
+    return "/" + code + ".html";
+  }
+  const stripped = path.replace(/^\/(pl|de)(?=\/)/, "") || "/";
+  const item = stripped.match(/^\/item\/([^/]+)\/?$/);
+  if (item) return (code === "en" ? "" : "/" + code) + "/item/" + item[1] + "/";
+  const cat = stripped.match(/^\/([a-z0-9-]+)\/?$/);
+  if (cat && SK.catSlugs.indexOf(cat[1]) !== -1) {
+    return (code === "en" ? "" : "/" + code) + "/" + cat[1] + "/";
+  }
+  if (code === "en") return "/";
+  return "/" + code + ".html";
+};
+SK.langSwitchHtml = () => {
+  const cur = SK.currentLang();
+  return `<nav class="lang-switch" aria-label="Language">${SK.langs.map((l) =>
+    `<a href="${SK.langHref(l.code)}" hreflang="${l.code}" lang="${l.code}"${l.code === cur ? ' class="is-on" aria-current="true"' : ""}>${l.label}</a>`
+  ).join("")}</nav>`;
+};
 
 SK.categories = [
   { slug: "shoes", label: "Designer Shoes", emoji: "👟", count: "745+", hot: true },
@@ -70,14 +424,34 @@ SK.itemSlug = (p) => {
   const base = SK.slugify(p && p.title);
   return (base ? base + "-" : "") + id;
 };
-SK.itemHref = (p) => SK.asset("item/" + SK.itemSlug(p) + "/");
-SK.catHref = (slug) => SK.asset("spreadsheet.html") + (slug ? "?cat=" + encodeURIComponent(slug) : "");
+SK.itemHref = (p) => {
+  const loc = SK.currentLang();
+  const hasLocale = loc === "en" || (p && (p.popular || p.featured));
+  const pre = hasLocale && loc !== "en" ? "/" + loc : "";
+  return pre + "/item/" + SK.itemSlug(p) + "/";
+};
+SK.catHref = (slug) => {
+  if (!slug) return SK.asset("spreadsheet.html");
+  const loc = SK.currentLang();
+  const pre = loc === "en" ? "" : "/" + loc;
+  return pre + "/" + encodeURIComponent(slug) + "/";
+};
+SK.catLabel = (slug) => {
+  const map = {
+    shoes: "cat_shoes", "t-shirts": "cat_tshirts", accessories: "cat_accessories",
+    hoodies: "cat_hoodies", pants: "cat_pants", jackets: "cat_jackets",
+    jersey: "cat_jersey", watches: "cat_watches", headwear: "cat_headwear",
+    glasses: "cat_glasses", sets: "cat_sets", bricks: "cat_bricks",
+    perfume: "cat_perfume", underwear: "cat_underwear", other: "cat_other",
+  };
+  return SK.t(map[slug] || "cat_other");
+};
 
 SK.products = () => (SK.catalog && SK.catalog.products) || [];
 
 SK.card = (p) => {
   const tags = [
-    p.popular ? `<span class="pill">Popular</span>` : "",
+    p.popular ? `<span class="pill">${SK.t("popular")}</span>` : "",
   ].filter(Boolean).join("");
   return `<a class="card" href="${SK.itemHref(p)}">
     <div class="card-media">
@@ -109,12 +483,13 @@ SK.mountChrome = (page) => {
 
   const header = document.getElementById("site-header");
   if (header) {
-    const links = SK.pages.map((p) =>
-      `<a class="${p.id === page ? "is-on" : ""}" href="${SK.asset(p.href)}">${p.label}</a>`
-    ).join("");
+    const links = SK.pages.map((p) => {
+      const href = p.id === "home" ? SK.homeHref() : SK.asset(p.href);
+      return `<a class="${p.id === page ? "is-on" : ""}" href="${href}">${SK.t("nav_" + p.id)}</a>`;
+    }).join("");
     header.innerHTML = `<div class="wrap header-row">
       <div class="header-left">
-        <a class="brand" href="${SK.asset("index.html")}">
+        <a class="brand" href="${SK.homeHref()}">
           <span class="brand-mark"><img src="${SK.asset("img/logo-k.png")}" alt="" width="26" height="32" /></span>
           <span class="brand-copy"><strong><span>kakobuy</span> spreadsheet</strong></span>
         </a>
@@ -124,10 +499,11 @@ SK.mountChrome = (page) => {
       </div>
       <nav class="nav-links">${links}</nav>
       <div class="header-cta">
+        <button class="btn btn-ghost pwa-header-btn" type="button" id="pwa-header-install">${SK.t("addDesktop")}</button>
         <div class="header-search">
-          <button class="btn btn-solid" type="button" id="search-open" aria-label="Search products">
+          <button class="btn btn-solid" type="button" id="search-open" aria-label="${SK.t("search")}">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" width="16" height="16"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-            Search
+            ${SK.t("search")}
           </button>
           <div class="search-pop" id="search-pop" hidden>
             <input id="header-search" type="search" placeholder="Search shoes, hoodies, brands…" autocomplete="off" />
@@ -136,14 +512,16 @@ SK.mountChrome = (page) => {
         </div>
         <button class="menu-btn" data-open="nav" aria-label="Menu">☰</button>
       </div>
-    </div>`;
+    </div>
+    <div class="header-lang">${SK.langSwitchHtml()}</div>`;
   }
 
   const mobile = document.getElementById("mobile-nav");
   if (mobile) {
-    mobile.innerHTML = SK.pages.map((p) =>
-      `<a href="${SK.asset(p.href)}">${p.label}</a>`
-    ).join("") + `<a href="${SK.signup}" target="_blank" rel="noopener">Sign up for KakoBuy</a>`;
+    mobile.innerHTML = SK.langSwitchHtml() + SK.pages.map((p) => {
+      const href = p.id === "home" ? SK.homeHref() : SK.asset(p.href);
+      return `<a href="${href}">${SK.t("nav_" + p.id)}</a>`;
+    }).join("") + `<a href="${SK.signup}" target="_blank" rel="noopener">${SK.t("signup")}</a>`;
   }
 
   const footer = document.getElementById("site-footer");
@@ -151,10 +529,10 @@ SK.mountChrome = (page) => {
     footer.innerHTML = `<div class="wrap">
       <div class="footer-grid">
         <div class="footer-col">
-          <a class="brand" href="${SK.asset("index.html")}">
+          <a class="brand" href="${SK.homeHref()}">
             <span class="brand-copy"><strong><span>kakobuy</span> spreadsheet</strong></span>
           </a>
-          <p>Independently curated list of 4,000+ KakoBuy replica links. Started in 2024. Not affiliated with KakoBuy.com.</p>
+          <p>Independently curated list of 4,000+ KakoBuy replica links.</p>
         </div>
         <div class="footer-col">
           <h3>Site</h3>
@@ -162,6 +540,8 @@ SK.mountChrome = (page) => {
           <a href="${SK.asset("coupons.html")}">Coupons</a>
           <a href="${SK.asset("qc.html")}">QC photos</a>
           <a href="${SK.asset("articles.html")}">Articles</a>
+          <a href="${SK.signup}" target="_blank" rel="noopener">Official KakoBuy</a>
+          <a href="${SK.discord}" target="_blank" rel="noopener">Join Discord</a>
         </div>
         <div class="footer-col">
           <h3>Guides</h3>
@@ -173,14 +553,24 @@ SK.mountChrome = (page) => {
           <a href="${SK.asset("de.html")}">Deutschland</a>
         </div>
         <div class="footer-col">
-          <h3>KakoBuy</h3>
-          <a href="${SK.signup}" target="_blank" rel="noopener">Official KakoBuy</a>
-          <a href="${SK.discord}" target="_blank" rel="noopener">Join Discord</a>
+          <h3>Trust</h3>
+          <a href="${SK.asset("about.html")}">About</a>
+          <a href="${SK.asset("contact.html")}">Contact</a>
+          <a href="${SK.asset("privacy.html")}">Privacy policy</a>
+          <a href="${SK.asset("disclaimer.html")}">Disclaimer</a>
+          <a href="${SK.asset("terms.html")}">Terms</a>
           <a href="mailto:${SK.site.email}">${SK.site.email}</a>
         </div>
       </div>
       <div class="legal">
         <p><strong>Affiliate disclosure.</strong> This site earns a small referral commission when you order through a KakoBuy link. Browsing is free. No paywall.</p>
+        <p>
+          <a href="${SK.asset("about.html")}">About</a> ·
+          <a href="${SK.asset("contact.html")}">Contact</a> ·
+          <a href="${SK.asset("privacy.html")}">Privacy</a> ·
+          <a href="${SK.asset("disclaimer.html")}">Disclaimer</a> ·
+          <a href="${SK.asset("terms.html")}">Terms</a>
+        </p>
         <p>© 2026 Spreadsheet Kakobuy. All rights reserved. Available worldwide · <a href="${SK.asset("pl.html")}">Polski</a> · <a href="${SK.asset("de.html")}">Deutsch</a></p>
       </div>
     </div>`;
@@ -200,6 +590,8 @@ SK.mountChrome = (page) => {
   }
   if (overlay) overlay.addEventListener("click", closeNav);
   SK.bindHeaderSearch();
+  const headerInstall = document.getElementById("pwa-header-install");
+  if (headerInstall) headerInstall.addEventListener("click", () => SK.installPwa());
 };
 
 SK.searchTerms = () => {
@@ -359,4 +751,5 @@ SK.faqs = {
 document.addEventListener("DOMContentLoaded", () => {
   const page = document.body.getAttribute("data-page") || "home";
   SK.mountChrome(page);
+  SK.mountPwa();
 });
